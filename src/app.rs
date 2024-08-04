@@ -2,12 +2,15 @@
 
 use std::collections::HashMap;
 
+use crate::creation::{self, Creation};
 use crate::fl;
 use cosmic::app::{Command, Core};
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{self, icon, menu, nav_bar};
 use cosmic::{cosmic_theme, theme, Application, ApplicationExt, Apply, Element};
+use quickget_core::data_structures::OS;
+use quickget_core::ConfigSearch;
 
 const REPOSITORY: &str = "https://github.com/edfloreshz/cosmic-app-template";
 
@@ -22,6 +25,8 @@ pub struct YourApp {
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// A model that contains all of the pages assigned to the nav bar panel.
     nav: nav_bar::Model,
+    page: Page,
+    creation: Creation,
 }
 
 /// This is the enum that contains all the possible variants that your application will need to transmit messages.
@@ -31,13 +36,12 @@ pub struct YourApp {
 pub enum Message {
     LaunchUrl(String),
     ToggleContextPage(ContextPage),
+    Creation(creation::Message),
 }
 
 /// Identifies a page in the application.
 pub enum Page {
-    Page1,
-    Page2,
-    Page3,
+    NewVM,
 }
 
 /// Identifies a context page to display in the context drawer.
@@ -111,29 +115,31 @@ impl Application for YourApp {
         let mut nav = nav_bar::Model::default();
 
         nav.insert()
-            .text("Page 1")
-            .data::<Page>(Page::Page1)
+            .text("Create new VM")
+            .data::<Page>(Page::NewVM)
             .icon(icon::from_name("applications-science-symbolic"))
             .activate();
-
-        nav.insert()
-            .text("Page 2")
-            .data::<Page>(Page::Page2)
-            .icon(icon::from_name("applications-system-symbolic"));
-
-        nav.insert()
-            .text("Page 3")
-            .data::<Page>(Page::Page3)
-            .icon(icon::from_name("applications-games-symbolic"));
 
         let mut app = YourApp {
             core,
             context_page: ContextPage::default(),
             key_binds: HashMap::new(),
             nav,
+            creation: Creation::default(),
+            page: Page::NewVM,
         };
 
-        let command = app.update_titles();
+        let update_titles = app.update_titles();
+        let fetch_os_list = Command::perform(
+            async {
+                ConfigSearch::new()
+                    .await
+                    .map_err(|e| e.to_string())
+                    .map(|x| x.into_os_list())
+            },
+            |x| Message::Creation(creation::Message::OSList(x)).into(),
+        );
+        let command = Command::batch([update_titles, fetch_os_list]);
 
         (app, command)
     }
@@ -158,13 +164,9 @@ impl Application for YourApp {
     ///
     /// To get a better sense of which widgets are available, check out the `widget` module.
     fn view(&self) -> Element<Self::Message> {
-        widget::text::title1(fl!("welcome"))
-            .apply(widget::container)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .into()
+        match self.page {
+            Page::NewVM => self.creation.view(),
+        }
     }
 
     /// Application messages are handled here. The application state can be modified based on
@@ -188,6 +190,10 @@ impl Application for YourApp {
 
                 // Set the title of the context drawer.
                 self.set_context_title(context_page.title());
+            }
+
+            Message::Creation(msg) => {
+                self.creation.update(msg);
             }
         }
         Command::none()
