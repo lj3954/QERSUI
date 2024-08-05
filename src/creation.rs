@@ -54,6 +54,81 @@ struct OptionSelection {
     ram: f64,
 }
 
+impl OptionSelection {
+    fn refresh(&mut self) {
+        let releases = self
+            .config_list
+            .clone()
+            .into_iter()
+            .filter(|config| self.arch.as_ref().map_or(true, |arch| &config.arch == arch))
+            .filter(|config| self.edition.is_none() || &config.edition == &self.edition)
+            .filter_map(|config| config.release)
+            .unique()
+            .collect::<Vec<String>>();
+
+        if let Some(ref release) = self.release {
+            if !releases.contains(release) {
+                self.release = None;
+            }
+        }
+        self.release_list = State::new(releases);
+
+        let editions = self.release.as_ref().and({
+            let editions = self
+                .config_list
+                .clone()
+                .into_iter()
+                .filter(|config| self.arch.as_ref().map_or(true, |arch| &config.arch == arch))
+                .filter(|config| self.release == config.release)
+                .filter_map(|config| config.edition)
+                .unique()
+                .collect::<Vec<String>>();
+            (!editions.is_empty()).then_some(editions)
+        });
+        if let Some(ref edition) = self.edition {
+            if let Some(ref editions) = editions {
+                if !editions.contains(edition) {
+                    self.edition = None;
+                }
+            } else {
+                self.edition = None;
+            }
+        }
+        self.edition_list = editions.map(State::new);
+
+        let full_arch_list = self
+            .config_list
+            .clone()
+            .into_iter()
+            .filter(|config| self.release.is_none() || config.release == self.release)
+            .filter(|config| self.edition.is_none() || config.edition == self.edition)
+            .map(|config| config.arch)
+            .collect::<Vec<Arch>>();
+        let arch_list = [Arch::x86_64, Arch::aarch64, Arch::riscv64]
+            .into_iter()
+            .filter(|arch| full_arch_list.contains(arch))
+            .collect::<Vec<Arch>>();
+        if let Some(ref arch) = self.arch {
+            if !arch_list.contains(arch) {
+                self.arch = None;
+            }
+        }
+        self.arch_list = State::new(arch_list);
+    }
+    fn set_release(&mut self, release: String) {
+        self.release = Some(release);
+        self.refresh();
+    }
+    fn set_edition(&mut self, edition: String) {
+        self.edition = Some(edition);
+        self.refresh();
+    }
+    fn set_arch(&mut self, arch: Arch) {
+        self.arch = Some(arch);
+        self.refresh();
+    }
+}
+
 impl Creation {
     pub fn new() -> Self {
         Self {
@@ -112,124 +187,19 @@ impl Creation {
                 });
                 self.page = Page::Options;
             }
-            Message::SelectedRelease(input_release) => {
-                if let Some(OptionSelection {
-                    config_list,
-                    release,
-                    release_list,
-                    edition_list,
-                    edition,
-                    arch_list,
-                    ..
-                }) = &mut self.options
-                {
-                    *release = Some(input_release);
-                    if release.is_some() {
-                        let editions = config_list
-                            .clone()
-                            .into_iter()
-                            .filter(|config| &config.release == release)
-                            .filter_map(|config| config.edition)
-                            .collect::<Vec<_>>();
-                        let editions = (!editions.is_empty()).then_some(editions);
-                        if let Some(current_edition) = edition {
-                            if !editions
-                                .as_ref()
-                                .map_or(false, |list| list.contains(current_edition))
-                            {
-                                *edition = None;
-                            }
-                            let full_arch_list = config_list
-                                .clone()
-                                .into_iter()
-                                .filter(|config| &config.release == release)
-                                .filter(|config| &config.edition == edition)
-                                .map(|config| config.arch)
-                                .collect::<Vec<_>>();
-
-                            *arch_list = State::new(
-                                [Arch::x86_64, Arch::aarch64, Arch::riscv64]
-                                    .into_iter()
-                                    .filter(|a| full_arch_list.contains(a))
-                                    .collect(),
-                            );
-                        }
-                        *edition_list = editions.map(State::new);
-                    } else {
-                        *edition_list = None;
-                        *edition = None;
-                    }
+            Message::SelectedRelease(release) => {
+                if let Some(options) = &mut self.options {
+                    options.set_release(release);
                 }
             }
-            Message::SelectedEdition(input_edition) => {
-                if let Some(OptionSelection {
-                    config_list,
-                    edition,
-                    edition_list,
-                    release,
-                    arch_list,
-                    ..
-                }) = &mut self.options
-                {
-                    *edition = Some(input_edition);
-                    let full_arch_list = config_list
-                        .clone()
-                        .into_iter()
-                        .filter(|config| &config.release == release)
-                        .filter(|config| &config.edition == edition)
-                        .map(|config| config.arch)
-                        .collect::<Vec<_>>();
-                    *arch_list = State::new(
-                        [Arch::x86_64, Arch::aarch64, Arch::riscv64]
-                            .into_iter()
-                            .filter(|a| full_arch_list.contains(a))
-                            .collect(),
-                    );
+            Message::SelectedEdition(edition) => {
+                if let Some(options) = &mut self.options {
+                    options.set_edition(edition);
                 }
             }
-            Message::SelectedArch(input_arch) => {
-                if let Some(OptionSelection {
-                    config_list,
-                    release,
-                    edition,
-                    edition_list,
-                    release_list,
-                    arch,
-                    ..
-                }) = &mut self.options
-                {
-                    *arch = Some(input_arch);
-                    let releases = config_list
-                        .clone()
-                        .into_iter()
-                        .filter(|config| Some(&config.arch) == arch.as_ref())
-                        .filter_map(|config| config.release)
-                        .unique()
-                        .collect::<Vec<_>>();
-                    if let Some(current_release) = release {
-                        if !releases.contains(current_release) {
-                            *release = None;
-                        }
-                    }
-
-                    let editions = config_list
-                        .clone()
-                        .into_iter()
-                        .filter(|config| Some(&config.arch) == arch.as_ref())
-                        .filter(|config| &config.release == release)
-                        .filter_map(|config| config.edition)
-                        .collect::<Vec<_>>();
-                    let editions = (!editions.is_empty()).then_some(editions);
-                    if let Some(current_edition) = edition {
-                        if !editions
-                            .as_ref()
-                            .map_or(false, |list| list.contains(current_edition))
-                        {
-                            *edition = None;
-                        }
-                    }
-                    *release_list = State::new(releases);
-                    *edition_list = editions.map(State::new);
+            Message::SelectedArch(arch) => {
+                if let Some(options) = &mut self.options {
+                    options.set_arch(arch);
                 }
             }
             Message::SetRAM(input_ram) => {
