@@ -1,12 +1,14 @@
 use cosmic::app::{Command, Core};
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::{Alignment, Length, Padding, Pixels};
+use cosmic::iced_widget::combo_box::State;
 use cosmic::widget::icon::Named;
-use cosmic::widget::{self, icon, menu, nav_bar};
+use cosmic::widget::{self, icon, list_column, menu, nav_bar};
 use cosmic::{cosmic_theme, theme, Application, ApplicationExt, Apply, Element};
 use itertools::Itertools;
 use quickemu::config::Arch;
 use quickget_core::data_structures::Config;
+use quickget_core::QuickgetInstance;
 use quickget_core::{data_structures::OS, ConfigSearch, ConfigSearchError, QGDownload};
 
 #[derive(Default, Clone, Debug)]
@@ -20,9 +22,11 @@ pub struct Creation {
 pub enum Message {
     OSList(Result<Vec<OS>, String>),
     SelectedOS(OS),
-    SelectedRelease(usize),
-    SelectedEdition(usize),
-    SelectedArch(usize),
+    SelectedRelease(String),
+    SelectedEdition(String),
+    SelectedArch(Arch),
+    SetRAM(f64),
+    SetCPUCores(usize),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -40,12 +44,14 @@ enum Page {
 #[derive(Clone, Debug)]
 struct OptionSelection {
     config_list: Vec<Config>,
-    release_list: Vec<String>,
+    release_list: State<String>,
     release: Option<String>,
-    edition_list: Option<Vec<String>>,
+    edition_list: Option<State<String>>,
     edition: Option<String>,
-    arch_list: Vec<Arch>,
+    arch_list: State<Arch>,
     arch: Option<Arch>,
+    cpu_cores: usize,
+    ram: f64,
 }
 
 impl Creation {
@@ -68,13 +74,14 @@ impl Creation {
                 }
             },
             Message::SelectedOS(os) => {
-                let release_list = os
-                    .releases
-                    .clone()
-                    .into_iter()
-                    .filter_map(|config| config.release)
-                    .unique()
-                    .collect::<Vec<String>>();
+                let release_list = State::new(
+                    os.releases
+                        .clone()
+                        .into_iter()
+                        .filter_map(|config| config.release)
+                        .unique()
+                        .collect(),
+                );
                 let arch_list = [Arch::x86_64, Arch::aarch64, Arch::riscv64]
                     .into_iter()
                     .filter(|arch| os.releases.iter().any(|config| &config.arch == arch))
@@ -86,6 +93,11 @@ impl Creation {
                     _ => Arch::x86_64,
                 };
                 let arch = (arch_list.contains(&preferred_arch)).then_some(preferred_arch);
+                let arch_list = State::new(arch_list);
+
+                let ram =
+                    QuickgetInstance::get_recommended_ram() as f64 / (1024 * 1024 * 1024) as f64;
+                let cpu_cores = QuickgetInstance::get_recommended_cpu_cores();
 
                 self.options = Some(OptionSelection {
                     config_list: os.releases,
@@ -95,10 +107,12 @@ impl Creation {
                     edition_list: None,
                     arch,
                     arch_list,
+                    ram,
+                    cpu_cores,
                 });
                 self.page = Page::Options;
             }
-            Message::SelectedRelease(index) => {
+            Message::SelectedRelease(input_release) => {
                 if let Some(OptionSelection {
                     config_list,
                     release,
@@ -109,7 +123,7 @@ impl Creation {
                     ..
                 }) = &mut self.options
                 {
-                    *release = release_list.get(index).cloned();
+                    *release = Some(input_release);
                     if release.is_some() {
                         let editions = config_list
                             .clone()
@@ -117,36 +131,37 @@ impl Creation {
                             .filter(|config| &config.release == release)
                             .filter_map(|config| config.edition)
                             .collect::<Vec<_>>();
-                        if editions.is_empty() {
-                            *edition_list = None;
-                        } else {
-                            *edition_list = Some(editions);
+                        let editions = (!editions.is_empty()).then_some(editions);
+                        if let Some(current_edition) = edition {
+                            if !editions
+                                .as_ref()
+                                .map_or(false, |list| list.contains(current_edition))
+                            {
+                                *edition = None;
+                            }
+                            let full_arch_list = config_list
+                                .clone()
+                                .into_iter()
+                                .filter(|config| &config.release == release)
+                                .filter(|config| &config.edition == edition)
+                                .map(|config| config.arch)
+                                .collect::<Vec<_>>();
+
+                            *arch_list = State::new(
+                                [Arch::x86_64, Arch::aarch64, Arch::riscv64]
+                                    .into_iter()
+                                    .filter(|a| full_arch_list.contains(a))
+                                    .collect(),
+                            );
                         }
+                        *edition_list = editions.map(State::new);
                     } else {
                         *edition_list = None;
-                    }
-                    if let Some(current_edition) = edition {
-                        if !edition_list
-                            .as_ref()
-                            .map_or(false, |list| list.contains(current_edition))
-                        {
-                            *edition = None;
-                        }
-                        let full_arch_list = config_list
-                            .clone()
-                            .into_iter()
-                            .filter(|config| &config.release == release)
-                            .filter(|config| &config.edition == edition)
-                            .map(|config| config.arch)
-                            .collect::<Vec<_>>();
-                        *arch_list = [Arch::x86_64, Arch::aarch64, Arch::riscv64]
-                            .into_iter()
-                            .filter(|a| full_arch_list.contains(a))
-                            .collect();
+                        *edition = None;
                     }
                 }
             }
-            Message::SelectedEdition(index) => {
+            Message::SelectedEdition(input_edition) => {
                 if let Some(OptionSelection {
                     config_list,
                     edition,
@@ -156,7 +171,7 @@ impl Creation {
                     ..
                 }) = &mut self.options
                 {
-                    *edition = edition_list.as_ref().unwrap().get(index).cloned();
+                    *edition = Some(input_edition);
                     let full_arch_list = config_list
                         .clone()
                         .into_iter()
@@ -164,13 +179,15 @@ impl Creation {
                         .filter(|config| &config.edition == edition)
                         .map(|config| config.arch)
                         .collect::<Vec<_>>();
-                    *arch_list = [Arch::x86_64, Arch::aarch64, Arch::riscv64]
-                        .into_iter()
-                        .filter(|a| full_arch_list.contains(a))
-                        .collect();
+                    *arch_list = State::new(
+                        [Arch::x86_64, Arch::aarch64, Arch::riscv64]
+                            .into_iter()
+                            .filter(|a| full_arch_list.contains(a))
+                            .collect(),
+                    );
                 }
             }
-            Message::SelectedArch(index) => {
+            Message::SelectedArch(input_arch) => {
                 if let Some(OptionSelection {
                     config_list,
                     release,
@@ -178,19 +195,19 @@ impl Creation {
                     edition_list,
                     release_list,
                     arch,
-                    arch_list,
+                    ..
                 }) = &mut self.options
                 {
-                    *arch = arch_list.get(index).cloned();
-                    *release_list = config_list
+                    *arch = Some(input_arch);
+                    let releases = config_list
                         .clone()
                         .into_iter()
                         .filter(|config| Some(&config.arch) == arch.as_ref())
                         .filter_map(|config| config.release)
                         .unique()
-                        .collect();
+                        .collect::<Vec<_>>();
                     if let Some(current_release) = release {
-                        if !release_list.contains(current_release) {
+                        if !releases.contains(current_release) {
                             *release = None;
                         }
                     }
@@ -202,19 +219,27 @@ impl Creation {
                         .filter(|config| &config.release == release)
                         .filter_map(|config| config.edition)
                         .collect::<Vec<_>>();
-                    if editions.is_empty() {
-                        *edition_list = None;
-                    } else {
-                        *edition_list = Some(editions);
-                    }
+                    let editions = (!editions.is_empty()).then_some(editions);
                     if let Some(current_edition) = edition {
-                        if !edition_list
+                        if !editions
                             .as_ref()
                             .map_or(false, |list| list.contains(current_edition))
                         {
                             *edition = None;
                         }
                     }
+                    *release_list = State::new(releases);
+                    *edition_list = editions.map(State::new);
+                }
+            }
+            Message::SetRAM(input_ram) => {
+                if let Some(OptionSelection { ram, .. }) = &mut self.options {
+                    *ram = input_ram;
+                }
+            }
+            Message::SetCPUCores(input_cores) => {
+                if let Some(OptionSelection { cpu_cores, .. }) = &mut self.options {
+                    *cpu_cores = input_cores;
                 }
             }
         }
@@ -252,52 +277,67 @@ impl Creation {
             }
             Page::Options => {
                 let OptionSelection {
-                    release_list,
                     release,
-                    config_list,
-                    edition_list,
                     edition,
-                    arch_list,
                     arch,
+                    release_list,
+                    edition_list,
+                    arch_list,
+                    ram,
+                    cpu_cores,
                     ..
                 } = self.options.as_ref().unwrap();
+
                 let mut list = widget::list_column();
-                let release_position = release
-                    .as_ref()
-                    .map(|release| release_list.iter().position(|r| r == release).unwrap());
-                let release_dropdown = widget::dropdown(release_list, release_position, |x| {
-                    Message::SelectedRelease(x).into()
-                });
-                let release_row = widget::row()
-                    .push(widget::text("Release: "))
-                    .push(release_dropdown);
-                list = list.add(release_row);
+                let mut row = widget::row();
+                let release_dropdown =
+                    widget::combo_box(release_list, "Release", release.as_ref(), |release| {
+                        Message::SelectedRelease(release).into()
+                    });
+                row = row.push(release_dropdown);
 
                 if let Some(edition_list) = edition_list {
-                    let edition_position = edition
-                        .as_ref()
-                        .map(|edition| edition_list.iter().position(|e| e == edition).unwrap());
-                    let edition_dropdown = widget::dropdown(edition_list, edition_position, |x| {
-                        Message::SelectedEdition(x).into()
-                    });
-                    let edition_row = widget::row()
-                        .push(widget::text("Edition: "))
-                        .push(edition_dropdown);
-                    list = list.add(edition_row);
+                    let edition_dropdown =
+                        widget::combo_box(edition_list, "Edition", edition.as_ref(), |edition| {
+                            Message::SelectedEdition(edition).into()
+                        });
+                    row = row.push(edition_dropdown);
                 }
 
-                let arch_position = arch
-                    .as_ref()
-                    .map(|arch| arch_list.iter().position(|a| a == arch).unwrap());
-                let arch_dropdown = widget::dropdown(arch_list, arch_position, |x| {
-                    Message::SelectedArch(x).into()
-                });
-                let arch_row = widget::row()
-                    .push(widget::text("Arch: "))
-                    .push(arch_dropdown);
-                list = list.add(arch_row);
+                let arch_dropdown =
+                    widget::combo_box(arch_list, "Architecture", arch.as_ref(), |arch| {
+                        Message::SelectedArch(arch).into()
+                    });
+                row = row.push(arch_dropdown);
+                list = list.add(row);
 
-                widget::scrollable(list).into()
+                let total_cores = QuickgetInstance::get_total_cpu_cores() as f64;
+                let cpu_slider = widget::slider(1.0..=total_cores, *cpu_cores as f64, |x| {
+                    Message::SetCPUCores(x as usize).into()
+                });
+                let cpu_text = widget::text("CPU Cores:  ").width(Length::Shrink);
+                let selected_cpu_text =
+                    widget::text(format!("  {cpu_cores}")).width(Length::Shrink);
+                let cpu_row = widget::row()
+                    .push(cpu_text)
+                    .push(cpu_slider)
+                    .push(selected_cpu_text);
+                list = list.add(cpu_row);
+
+                let ram_gb = QuickgetInstance::get_total_ram() as f64 / (1024 * 1024 * 1024) as f64;
+                let ram_slider =
+                    widget::slider(0.25..=ram_gb as f64, *ram, |x| Message::SetRAM(x).into())
+                        .step(0.01);
+                let ram_text = widget::text("RAM:  ").width(Length::Shrink);
+                let selected_ram_text =
+                    widget::text(format!("  {ram:.2} GiB")).width(Length::Shrink);
+                let ram_row = widget::row()
+                    .push(ram_text)
+                    .push(ram_slider)
+                    .push(selected_ram_text);
+                list = list.add(ram_row);
+
+                list.into()
             }
             _ => widget::text("NOT YET IMPLEMENTED").into(),
         }
