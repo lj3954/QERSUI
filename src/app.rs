@@ -192,9 +192,7 @@ impl Application for YourApp {
                 self.set_context_title(context_page.title());
             }
 
-            Message::Creation(msg) => {
-                self.creation.update(msg);
-            }
+            Message::Creation(msg) => return self.creation.update(msg),
         }
         Command::none()
     }

@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+
+use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
 use cosmic::app::{Command, Core};
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::{Alignment, Length, Padding, Pixels};
@@ -20,6 +23,7 @@ pub struct Creation {
 
 #[derive(Clone, Debug)]
 pub enum Message {
+    None,
     OSList(Result<Vec<OS>, String>),
     SelectedOS(OS),
     SelectedRelease(String),
@@ -27,6 +31,8 @@ pub enum Message {
     SelectedArch(Arch),
     SetRAM(f64),
     SetCPUCores(usize),
+    SelectVMDir,
+    SelectedDir(PathBuf),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -52,6 +58,7 @@ struct OptionSelection {
     arch: Option<Arch>,
     cpu_cores: usize,
     ram: f64,
+    directory: PathBuf,
 }
 
 impl OptionSelection {
@@ -137,7 +144,7 @@ impl Creation {
             ..Default::default()
         }
     }
-    pub fn update(&mut self, message: Message) {
+    pub fn update(&mut self, message: Message) -> Command<crate::app::Message> {
         match message {
             Message::OSList(list) => match list {
                 Ok(os_list) => {
@@ -184,6 +191,7 @@ impl Creation {
                     arch_list,
                     ram,
                     cpu_cores,
+                    directory: std::env::current_dir().unwrap(),
                 });
                 self.page = Page::Options;
             }
@@ -212,7 +220,50 @@ impl Creation {
                     *cpu_cores = input_cores;
                 }
             }
-        }
+            Message::SelectVMDir => {
+                return Command::perform(
+                    async move {
+                        let result = SelectedFiles::open_file()
+                            .title("Select VM Directory")
+                            .accept_label("Select")
+                            .modal(true)
+                            .multiple(false)
+                            .directory(true)
+                            .send()
+                            .await
+                            .unwrap()
+                            .response();
+
+                        result.ok().and_then(|directory| {
+                            directory
+                                .uris()
+                                .iter()
+                                .next()
+                                .and_then(|file| file.to_file_path().ok())
+                        })
+                    },
+                    |directory| {
+                        if let Some(directory) = directory {
+                            crate::app::Message::Creation(Message::SelectedDir(directory)).into()
+                        } else {
+                            crate::app::Message::Creation(Message::None).into()
+                        }
+                    },
+                );
+            }
+            Message::SelectedDir(selected_directory) => {
+                if let Some(OptionSelection { directory, .. }) = &mut self.options {
+                    *directory = selected_directory;
+                    println!(
+                        "Directory updated: {}. Exists: {}",
+                        directory.display(),
+                        directory.exists()
+                    );
+                }
+            }
+            Message::None => {}
+        };
+        Command::none()
     }
     pub fn view(&self) -> Element<crate::app::Message> {
         match self.page {
@@ -255,6 +306,7 @@ impl Creation {
                     arch_list,
                     ram,
                     cpu_cores,
+                    directory,
                     ..
                 } = self.options.as_ref().unwrap();
 
@@ -306,6 +358,20 @@ impl Creation {
                     .push(ram_slider)
                     .push(selected_ram_text);
                 list = list.add(ram_row);
+
+                let vm_dir_text = widget::text("VM Directory:  ").width(Length::Shrink);
+                let vm_dir_input = widget::text_input("VM Directory", directory.to_string_lossy())
+                    .on_input(|dir| Message::SelectedDir(PathBuf::from(dir)).into());
+                let vm_dir_open_button =
+                    widget::button::icon(icon::from_name("folder-open-symbolic"))
+                        .on_press(Message::SelectVMDir.into())
+                        .tooltip("Select VM Directory")
+                        .width(Length::Shrink);
+                let vm_dir_row = widget::row()
+                    .push(vm_dir_text)
+                    .push(vm_dir_input)
+                    .push(vm_dir_open_button);
+                list = list.add(vm_dir_row);
 
                 list.into()
             }
